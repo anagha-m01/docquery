@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-multipart
+pdfplumber
+pandas
+openpyxl
+groq
+psycopg2-binary
+sentence-transformers==3.0.1
+numpy
