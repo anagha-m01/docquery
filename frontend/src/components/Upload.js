@@ -3,7 +3,7 @@ import axios from "axios";
 
 const API_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
-function Upload({ setResult, setSchema, setError, setExtractionId, setLastFilename }) {
+function Upload({ setResult, setSchema, setError, setExtractionId, setLastFilename, onUploaded }) {
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -48,6 +48,8 @@ function Upload({ setResult, setSchema, setError, setExtractionId, setLastFilena
       if (payload.schema) setSchema(payload.schema);
       if (payload.data !== undefined) setResult(payload.data);
       else setResult(payload);
+
+      if (onUploaded) onUploaded();
 
     } catch (err) {
       const msg =
