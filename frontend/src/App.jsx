@@ -4,9 +4,10 @@ import Result from "./components/Result";
 import SchemaEditor from "./components/SchemaEditor";
 import Sidebar from "./components/Sidebar";
 import Chat from "./components/Chat";
+import Logo from "./components/Logo";
 import "./App.css";
 
-const API_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 function App() {
   const [result, setResult] = useState(null);
@@ -73,7 +74,9 @@ function App() {
 
         <div className="container">
           <header className="header">
-            <div className="logo-mark">⬡</div>
+            <div className="logo-mark">
+              <Logo size={76} />
+            </div>
             <h1>DocQuery</h1>
             <p className="subtitle">
               LLM-powered extraction from PDF, Excel &amp; CSV files
@@ -122,3 +125,4 @@ function App() {
 }
 
 export default App;
+

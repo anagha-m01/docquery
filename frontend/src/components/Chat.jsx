@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import axios from "axios";
 
-const API_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 function Chat({ extractionId, filename }) {
   const [messages, setMessages] = useState([]);
@@ -139,3 +139,4 @@ function Chat({ extractionId, filename }) {
 }
 
 export default Chat;
+
