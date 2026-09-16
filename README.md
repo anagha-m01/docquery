@@ -2,6 +2,9 @@
 
 LLM-powered document extraction and chat. Upload a PDF, Excel, or CSV file — DocQuery invents a structured schema, extracts the data into it, and lets you ask free-form questions about the document afterward using retrieval-augmented generation (RAG).
 
+Live demo: https://docquery-weld.vercel.app
+Backend API: https://docquery-9kma.onrender.com
+
 ---
 
 ## Overview
@@ -13,9 +16,10 @@ Every chunk (PDF) or row (Excel/CSV) is embedded locally with `sentence-transfor
 ## Architecture
 
 ```
-┌───────────────┐      HTTP (REST/JSON)       ┌───────────────────┐
+┌───────────────┐      HTTPS (REST/JSON)      ┌───────────────────┐
 │   Frontend     │ ───────────────────────────► │     Backend       │
 │  React + Vite  │ ◄─────────────────────────── │     FastAPI       │
+│    (Vercel)    │                               │     (Render)      │
 └───────────────┘                               └─────────┬─────────┘
                                                             │
                                 ┌───────────────────────────┼───────────────────────────┐
@@ -46,7 +50,7 @@ Routers stay thin and services don't know anything about HTTP — this keeps Fas
 **Backend:** FastAPI, Groq API (LLM inference), pdfplumber (PDF text extraction), pandas + openpyxl (direct Excel/CSV parsing), sentence-transformers (local embeddings), psycopg2 + pgvector (Postgres vector search)
 **Frontend:** React 19, Vite, Axios, react-syntax-highlighter
 **Testing:** Vitest + React Testing Library (frontend)
-**Orchestration:** Docker Compose
+**Orchestration:** Docker Compose (local), Render + Vercel (hosted)
 
 ## Features
 
@@ -56,6 +60,12 @@ Routers stay thin and services don't know anything about HTTP — this keeps Fas
 - RAG-based chat over any uploaded file, with conversation history persisted per file so follow-ups have context
 - Full upload/re-extraction history, browsable from the sidebar
 - Local embeddings via `sentence-transformers` — no per-embedding API cost
+
+## Security & production readiness
+
+- **CORS is locked to an explicit allowlist** — no wildcard origin. The deployed Vercel frontend is allowed by default, extendable via the `ALLOWED_ORIGINS` env var (comma-separated) without a code change.
+- **No secrets in git** — `.env.example` documents every variable; real keys stay in `.env` / the host's environment dashboard.
+- **Groq key required at startup** — a missing `GROQ_API_KEY` fails fast instead of erroring on the first request.
 
 ## Testing
 
@@ -110,12 +120,12 @@ frontend/                  # React SPA (Vite)
 docker-compose.yml
 ```
 
-## Installation
+## Installation (local development)
 
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/<your-username>/docquery.git
+git clone https://github.com/anagha-m01/docquery.git
 cd docquery
 ```
 
@@ -192,12 +202,13 @@ App is now live at `http://localhost:3000`, calling the backend at `http://local
 | `POSTGRES_PASSWORD` | | `postgres` | |
 | `EMBEDDING_MODEL` | | `all-MiniLM-L6-v2` | Not in `.env.example`, but overridable |
 | `TOP_K_PDF` / `TOP_K_EXCEL` / `TOP_K_CHAT` | | `4` / `100` / `5` | Chunks/rows retrieved per re-extraction or chat turn |
+| `ALLOWED_ORIGINS` | production only | `https://docquery-weld.vercel.app` + localhost | Comma-separated; must exactly match your deployed frontend URL |
 
 **Frontend (`frontend/.env`, or via Docker Compose)**
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `VITE_API_URL` | | `http://localhost:8000` | Base URL of the backend API. Docker Compose sets this to `http://localhost:8001` to match the mapped host port |
+| `VITE_API_URL` | production only | `http://localhost:8000` | Base URL of the deployed backend API |
 
 ## API
 
@@ -218,9 +229,37 @@ App is now live at `http://localhost:3000`, calling the backend at `http://local
 4. Ask questions about the file in the chat panel — answers are grounded in retrieved content, not guesses.
 5. Revisit any past upload from the history sidebar; its data and chat thread pick back up where you left off.
 
+## Deployment
+
+This is a two-part deploy: **backend + Postgres/pgvector on Render**, **frontend on Vercel**.
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/anagha-m01/docquery)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/anagha-m01/docquery&root-directory=frontend)
+
+**Backend (Render, free tier):**
+
+1. Push this repo to GitHub.
+2. Create a Postgres database on Render, then enable pgvector on it (`CREATE EXTENSION IF NOT EXISTS vector;` via psql).
+3. Create a new Web Service pointing at this repo, root directory `backend`.
+4. Build command: `pip install -r requirements.txt`
+5. Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+6. Add environment variables in Render's dashboard: `GROQ_API_KEY`, `POSTGRES_HOST`/`PORT`/`DB`/`USER`/`PASSWORD` (from the database's Connections panel), and (once you know it) `ALLOWED_ORIGINS=https://your-app.vercel.app`. The rest have working defaults — see the table above.
+7. Deploy, then confirm `https://<your-render-url>/` returns `{"status": "ok", "service": "DocQuery API"}`.
+
+**Frontend (Vercel, free tier):**
+
+1. Import this repo, root directory `frontend`.
+2. Framework preset: Vite.
+3. Add environment variable `VITE_API_URL` set to your deployed Render backend URL (e.g. `https://docquery-9kma.onrender.com`).
+4. Deploy.
+5. Go back to Render and set `ALLOWED_ORIGINS` to your new Vercel URL (exact match, no trailing slash), then redeploy the backend — CORS will reject the frontend until this matches.
+
+**Why this order matters:** the frontend needs the backend's URL to call it, and the backend needs the frontend's URL to allow it through CORS — so the backend gets redeployed once at the end with the real Vercel URL filled in.
+
+**Known limitation:** Render's free Postgres tier expires after 30 days and the web service spins down on idle (cold start on the first request after inactivity). Fine for a demo; a production deploy would move to a paid Postgres plan and an always-on web service tier.
+
 ## Known limitations / possible next steps
 
-- **CORS is wide open** (`allow_origins=["*"]`) — fine for local dev, not for a public deploy
 - **No auth** — extractions aren't scoped per user; anyone with API access sees everything
 - Store original uploaded file bytes (currently only extracted data is kept)
 - Postgres full-text search (`tsvector`) combined with pgvector cosine similarity for hybrid keyword + semantic search
