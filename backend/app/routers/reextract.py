@@ -1,19 +1,21 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.config import settings
+from app.core.deps import get_current_user
 from app.core.database import (
     get_extraction_for_reextract, get_top_pdf_chunks, get_top_excel_rows, save_extraction,
+    DatabaseError,
 )
-from app.services.embedding_service import embed
-from app.services.llm_service import extract_with_custom_schema
+from app.services.embedding_service import embed, EmbeddingServiceError
+from app.services.llm_service import extract_with_custom_schema, LLMServiceError
 from app.schemas.extraction import ReExtractRequest
 
 router = APIRouter(tags=["reextract"])
 
 
 @router.post("/reextract")
-async def reextract(req: ReExtractRequest):
-    row = get_extraction_for_reextract(req.extraction_id)
+async def reextract(req: ReExtractRequest, current_user: dict = Depends(get_current_user)):
+    row = get_extraction_for_reextract(req.extraction_id, current_user["id"])
     if not row:
         raise HTTPException(status_code=404, detail="Extraction not found.")
 
@@ -45,11 +47,15 @@ async def reextract(req: ReExtractRequest):
             schema=req.schema,
             data=result,
             raw_text=row.get("raw_text"),
+            user_id=current_user["id"],
         )
 
         return {"id": new_id, "data": result}
 
     except HTTPException:
         raise
+    except (LLMServiceError, EmbeddingServiceError, DatabaseError) as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Re-extraction failed: {str(e)}")
+    

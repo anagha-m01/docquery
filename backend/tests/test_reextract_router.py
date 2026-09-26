@@ -1,6 +1,6 @@
 def test_reextract_returns_404_when_extraction_missing(client, monkeypatch):
     monkeypatch.setattr(
-        "app.routers.reextract.get_extraction_for_reextract", lambda eid: None
+        "app.routers.reextract.get_extraction_for_reextract", lambda eid, uid: None
     )
 
     res = client.post(
@@ -11,10 +11,26 @@ def test_reextract_returns_404_when_extraction_missing(client, monkeypatch):
     assert res.status_code == 404
 
 
+def test_reextract_requires_auth(raw_client):
+    res = raw_client.post(
+        "/reextract",
+        json={"extraction_id": 1, "schema": {"name": "string"}, "filename": "x.csv"},
+    )
+    assert res.status_code == 401
+
+
+def test_reextract_rejects_empty_schema(client):
+    res = client.post(
+        "/reextract",
+        json={"extraction_id": 1, "schema": {}, "filename": "x.csv"},
+    )
+    assert res.status_code == 422
+
+
 def test_reextract_tabular_success(client, monkeypatch):
     monkeypatch.setattr(
         "app.routers.reextract.get_extraction_for_reextract",
-        lambda eid: {"file_type": "csv", "raw_text": None, "data": []},
+        lambda eid, uid: {"file_type": "csv", "raw_text": None, "data": []},
     )
     monkeypatch.setattr("app.routers.reextract.embed", lambda text: [0.1] * 384)
     monkeypatch.setattr(
@@ -40,7 +56,7 @@ def test_reextract_tabular_success(client, monkeypatch):
 def test_reextract_tabular_no_rows_returns_400(client, monkeypatch):
     monkeypatch.setattr(
         "app.routers.reextract.get_extraction_for_reextract",
-        lambda eid: {"file_type": "xlsx", "raw_text": None, "data": []},
+        lambda eid, uid: {"file_type": "xlsx", "raw_text": None, "data": []},
     )
     monkeypatch.setattr("app.routers.reextract.embed", lambda text: [0.1] * 384)
     monkeypatch.setattr(
@@ -58,7 +74,7 @@ def test_reextract_tabular_no_rows_returns_400(client, monkeypatch):
 def test_reextract_pdf_success(client, monkeypatch):
     monkeypatch.setattr(
         "app.routers.reextract.get_extraction_for_reextract",
-        lambda eid: {"file_type": "pdf", "raw_text": "full text", "data": []},
+        lambda eid, uid: {"file_type": "pdf", "raw_text": "full text", "data": []},
     )
     monkeypatch.setattr("app.routers.reextract.embed", lambda text: [0.1] * 384)
     monkeypatch.setattr(
@@ -87,7 +103,7 @@ def test_reextract_pdf_success(client, monkeypatch):
 def test_reextract_pdf_no_chunks_returns_400(client, monkeypatch):
     monkeypatch.setattr(
         "app.routers.reextract.get_extraction_for_reextract",
-        lambda eid: {"file_type": "pdf", "raw_text": "full text", "data": []},
+        lambda eid, uid: {"file_type": "pdf", "raw_text": "full text", "data": []},
     )
     monkeypatch.setattr("app.routers.reextract.embed", lambda text: [0.1] * 384)
     monkeypatch.setattr(
@@ -105,11 +121,11 @@ def test_reextract_pdf_no_chunks_returns_400(client, monkeypatch):
 def test_reextract_returns_500_on_unexpected_error(client, monkeypatch):
     monkeypatch.setattr(
         "app.routers.reextract.get_extraction_for_reextract",
-        lambda eid: {"file_type": "csv", "raw_text": None, "data": []},
+        lambda eid, uid: {"file_type": "csv", "raw_text": None, "data": []},
     )
 
     def boom(text):
-        raise RuntimeError("embedding service down")
+        raise RuntimeError("something odd")
 
     monkeypatch.setattr("app.routers.reextract.embed", boom)
 
@@ -119,3 +135,25 @@ def test_reextract_returns_500_on_unexpected_error(client, monkeypatch):
     )
 
     assert res.status_code == 500
+
+
+def test_reextract_returns_503_on_embedding_failure(client, monkeypatch):
+    from app.services.embedding_service import EmbeddingServiceError
+
+    monkeypatch.setattr(
+        "app.routers.reextract.get_extraction_for_reextract",
+        lambda eid, uid: {"file_type": "csv", "raw_text": None, "data": []},
+    )
+
+    def boom(text):
+        raise EmbeddingServiceError("Could not process this text for search. Please try again.")
+
+    monkeypatch.setattr("app.routers.reextract.embed", boom)
+
+    res = client.post(
+        "/reextract",
+        json={"extraction_id": 1, "schema": {"name": "string"}, "filename": "people.csv"},
+    )
+
+    assert res.status_code == 503
+    

@@ -1,12 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
-import axios from "axios";
-
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+import api, { extractErrorMessage } from "../api/client";
 
 function Chat({ extractionId, filename }) {
   const [messages, setMessages] = useState([]);
   const [question, setQuestion] = useState("");
   const [sending, setSending] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [error, setError] = useState(null);
   const bottomRef = useRef(null);
 
@@ -20,10 +19,13 @@ function Chat({ extractionId, filename }) {
     let cancelled = false;
     (async () => {
       try {
-        const res = await axios.get(`${API_URL}/chat/${extractionId}`);
+        setHistoryLoading(true);
+        const res = await api.get(`/chat/${extractionId}`);
         if (!cancelled) setMessages(res.data.messages || []);
       } catch (err) {
         if (!cancelled) setMessages([]);
+      } finally {
+        if (!cancelled) setHistoryLoading(false);
       }
     })();
 
@@ -47,7 +49,7 @@ function Chat({ extractionId, filename }) {
     setSending(true);
 
     try {
-      const res = await axios.post(`${API_URL}/chat`, {
+      const res = await api.post("/chat", {
         extraction_id: extractionId,
         question: q,
       });
@@ -56,9 +58,7 @@ function Chat({ extractionId, filename }) {
         { role: "assistant", content: res.data.answer },
       ]);
     } catch (err) {
-      const msg =
-        err.response?.data?.detail || err.message || "Chat request failed.";
-      setError(msg);
+      setError(extractErrorMessage(err, "Chat request failed."));
     } finally {
       setSending(false);
     }
@@ -80,10 +80,15 @@ function Chat({ extractionId, filename }) {
       </div>
 
       <div className="chat-messages">
-        {messages.length === 0 && !sending && (
+        {historyLoading && (
+          <div className="chat-hint chat-loading-hint">
+            <span className="spinner spinner-muted" /> Loading conversation…
+          </div>
+        )}
+
+        {!historyLoading && messages.length === 0 && !sending && (
           <div className="chat-hint">
-            Ask anything about this document — e.g. "What's the total on
-            invoice 3?" or "Summarize the key figures."
+            Ask any question about this document.
           </div>
         )}
 
@@ -139,4 +144,3 @@ function Chat({ extractionId, filename }) {
 }
 
 export default Chat;
-

@@ -194,7 +194,7 @@ App is now live at `http://localhost:3000`, calling the backend at `http://local
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `GROQ_API_KEY` | ✅ | — | Needed for PDF schema invention, re-extraction, and chat |
-| `LLM_MODEL` | | `groq/compound-mini` | Any current Groq-supported model |
+| `LLM_MODEL` | | `openai/gpt-oss-120b` | Any current Groq-supported model |
 | `POSTGRES_HOST` | | `db` | Set to `localhost` for manual (non-Docker) backend dev |
 | `POSTGRES_PORT` | | `5432` | |
 | `POSTGRES_DB` | | `docquery_db` | |
