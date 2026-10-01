@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 from app.services.extractor_service import (
     process_file,
     chunk_text,
+    group_sections_by_toc,
     is_empty,
     is_metadata_noise,
     resolve_conflict,
@@ -28,8 +29,16 @@ def test_single_final_output_json_object(monkeypatch, tmp_path):
         lambda path: mock_text,
     )
     monkeypatch.setattr(
+        "app.services.extractor_service.extract_sections_from_pdf",
+        lambda path: [{"heading": "Policy Details", "text": mock_text}],
+    )
+    monkeypatch.setattr(
+        "app.services.extractor_service.extract_toc_headings",
+        lambda path: [],
+    )
+    monkeypatch.setattr(
         "app.services.extractor_service.generate_document_schema",
-        lambda full_text, chunks: {
+        lambda sections: {
             "policyholder": {"type": "string"},
             "policy_number": {"type": "string"},
             "premium": {"type": "number"},
@@ -65,27 +74,31 @@ def test_long_pdf_all_sections_included(monkeypatch, tmp_path):
     pdf_path = tmp_path / "long_policy.pdf"
     pdf_path.write_bytes(b"%PDF-1.4 long fake")
 
-    # Simulate a long 8-chunk document with content in early, middle, and later sections
-    section_texts = [
-        f"Section {i}: Key_{i} value is Value_{i}." for i in range(8)
+    # Simulate a long 8-section document with content in early, middle, and later sections
+    section_dicts = [
+        {"heading": f"Section {i}", "text": f"Section {i}: Key_{i} value is Value_{i}."}
+        for i in range(8)
     ]
-    full_text = " ".join(section_texts)
+    full_text = " ".join(s["text"] for s in section_dicts)
 
     monkeypatch.setattr(
         "app.services.extractor_service.extract_text_from_pdf",
         lambda path: full_text,
     )
-    # Force chunks to match our 8 sections
     monkeypatch.setattr(
-        "app.services.extractor_service.chunk_text",
-        lambda text, max_chars=5000, overlap=300: section_texts,
+        "app.services.extractor_service.extract_sections_from_pdf",
+        lambda path: section_dicts,
+    )
+    monkeypatch.setattr(
+        "app.services.extractor_service.extract_toc_headings",
+        lambda path: [f"Section {i}" for i in range(8)],
     )
 
     schema_called_with = {}
 
-    def mock_generate_schema(full_text, chunks=None):
-        schema_called_with["full_text"] = full_text
-        schema_called_with["chunks_count"] = len(chunks) if chunks else 0
+    def mock_generate_schema(sections):
+        schema_called_with["sections"] = sections
+        schema_called_with["sections_count"] = len(sections)
         # Schema includes fields spanning all sections
         return {f"key_{i}": {"type": "string"} for i in range(8)}
 
@@ -108,8 +121,8 @@ def test_long_pdf_all_sections_included(monkeypatch, tmp_path):
     result = process_file(str(pdf_path), "long_policy.pdf")
 
     # Verify schema was generated with full document context
-    assert schema_called_with["chunks_count"] == 8
-    assert "Section 7" in schema_called_with["full_text"]
+    assert schema_called_with["sections_count"] == 8
+    assert schema_called_with["sections"][7]["heading"] == "Section 7"
 
     # Verify EVERY chunk up to the final section was processed (not capped at 5)
     assert extracted_chunk_indices == [0, 1, 2, 3, 4, 5, 6, 7]
@@ -118,6 +131,32 @@ def test_long_pdf_all_sections_included(monkeypatch, tmp_path):
     assert result["data"]["key_0"] == "Value_0"
     assert result["data"]["key_4"] == "Value_4"
     assert result["data"]["key_7"] == "Value_7"
+
+
+def test_chunk_text_utility():
+    """Verify chunk_text chunks with overlap."""
+    text = "A" * 1000
+    chunks = chunk_text(text, max_chars=300, overlap=50)
+    assert len(chunks) > 1
+    assert all(len(c) <= 300 for c in chunks)
+
+
+def test_group_sections_by_toc():
+    """Verify TOC grouping correctly groups fine-grained sections."""
+    fine = [
+        {"heading": "Title Page", "text": "Report Title"},
+        {"heading": "1 Anti-ragging Policy", "text": "Rules on ragging"},
+        {"heading": "Objectives", "text": "Prevent harassment"},
+        {"heading": "2 Divyangjan Policy", "text": "Accessibility support"},
+    ]
+    toc = ["Anti-ragging Policy", "Divyangjan Policy"]
+
+    grouped = group_sections_by_toc(fine, toc)
+    assert len(grouped) == 3
+    assert grouped[0]["heading"] == "Front Matter"
+    assert grouped[1]["heading"] == "Anti-ragging Policy"
+    assert "Prevent harassment" in grouped[1]["text"]
+    assert grouped[2]["heading"] == "Divyangjan Policy"
 
 
 # ── 3. Null Merging ───────────────────────────────────────────

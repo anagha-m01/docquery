@@ -6,9 +6,8 @@ from app.core.config import settings
 from app.core.deps import get_current_user
 from app.core.database import save_extraction, save_pdf_chunks, save_excel_rows, DatabaseError
 from app.services.extractor_service import process_file
-from app.services.llm_service import get_chunks, LLMServiceError
+from app.services.llm_service import LLMServiceError
 from app.services.embedding_service import embed_batch, EmbeddingServiceError
-from app.utils.pdf_parser import extract_text_from_pdf
 
 router = APIRouter(tags=["extract"])
 
@@ -52,14 +51,18 @@ async def extract(file: UploadFile = File(...), current_user: dict = Depends(get
         data = result.get("data", result)
 
         if ext == ".pdf":
-            raw_text = extract_text_from_pdf(tmp_path)
+            # process_file already parsed the PDF once (for sectioning)
+            # and produced the same section-tagged chunks used for
+            # extraction — reuse both instead of re-parsing the file and
+            # re-chunking it a second, inconsistent way.
+            raw_text = result.get("raw_text", "")
+            chunks = result.get("chunks", [])
 
             row_id = save_extraction(
                 filename=file.filename, file_type=ext.lstrip("."),
                 schema=schema, data=data, raw_text=raw_text, user_id=current_user["id"],
             )
 
-            chunks = get_chunks(raw_text)
             if chunks:
                 embeddings = embed_batch(chunks)
                 save_pdf_chunks(row_id, chunks, embeddings)

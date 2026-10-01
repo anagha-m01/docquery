@@ -82,8 +82,12 @@ def test_reextract_pdf_success(client, monkeypatch):
         lambda eid, emb, top_k: ["chunk one"],
     )
     monkeypatch.setattr(
-        "app.routers.reextract.extract_with_custom_schema",
-        lambda chunks, schema: [{"name": "Bob"}],
+        "app.routers.reextract.extract_chunk_with_schema",
+        lambda chunk, schema, chunk_index, total_chunks: {"name": "Bob"},
+    )
+    monkeypatch.setattr(
+        "app.routers.reextract.merge_chunk_results",
+        lambda chunk_extractions, source_text="", schema=None: {"name": "Bob"},
     )
     monkeypatch.setattr(
         "app.routers.reextract.save_extraction", lambda **kwargs: 7
@@ -97,7 +101,7 @@ def test_reextract_pdf_success(client, monkeypatch):
     assert res.status_code == 200
     body = res.json()
     assert body["id"] == 7
-    assert body["data"] == [{"name": "Bob"}]
+    assert body["data"] == {"name": "Bob"}
 
 
 def test_reextract_pdf_no_chunks_returns_400(client, monkeypatch):

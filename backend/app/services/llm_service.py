@@ -4,11 +4,29 @@ llm_service.py
 Groq LLM integration.
 
 extract_json()               — first upload, LLM freely invents schema
-extract_with_custom_schema() — re-extract using top chunks from pgvector
+                                (kept for callers that don't have a
+                                heading-aware schema yet).
+generate_document_schema()   — NEW SIGNATURE: takes the section list from
+                                pdf_parser.extract_sections_from_pdf(),
+                                one schema key per heading, instead of
+                                sampling arbitrary text stubs.
+get_chunks()                 — NEW SIGNATURE: chunks per section instead
+                                of blindly across the whole flat text, and
+                                tags each chunk with the heading it came
+                                from ("[SECTION: <heading>]\\n...") so a
+                                later re-extraction pass can still route
+                                it correctly without re-parsing the PDF.
+extract_chunk_with_schema()  — now routes each chunk to only the matching
+                                schema key(s) before prompting, instead of
+                                sending the full schema to every chunk.
+extract_with_custom_schema() — unchanged; superseded for /reextract by the
+                                per-section retrieval in reextract.py, but
+                                left in place in case anything else calls it.
 answer_chat_question()       — RAG chat over retrieved chunks/rows, or a
-                                pandas-computed answer handed in as context
+                                pandas-computed answer handed in as context.
 """
 
+import difflib
 import json
 import re
 from groq import Groq, GroqError
@@ -18,6 +36,9 @@ from app.core.config import settings
 client = Groq(api_key=settings.GROQ_API_KEY)
 
 MAX_CHARS = 3000  # safe chunk size for free tier token limits
+
+# Matches the tag get_chunks() stamps on every chunk it produces.
+_SECTION_TAG = re.compile(r"^\[SECTION:\s*(.+?)\s*\]\n", re.DOTALL)
 
 
 class LLMServiceError(Exception):
@@ -84,13 +105,63 @@ def _parse_list(result) -> list:
     return [result]
 
 
-def get_chunks(text: str) -> list[str]:
-    """Public — used by extractor_service to get chunks for embedding."""
-    return _chunk_text(text)
+def slugify(heading: str) -> str:
+    """'Divyangjan Policy' -> 'divyangjan_policy'."""
+    return re.sub(r"[^a-z0-9]+", "_", heading.lower()).strip("_")
+
+
+def route_to_schema_key(heading: str, schema: dict) -> str | None:
+    """
+    Exact slug match first; fuzzy fallback for near-misses (schema keys
+    the LLM generated won't always exactly match a heading slug, e.g.
+    heading "Policy for Canteen Services" vs schema key "canteen_policy").
+    Returns None if nothing matches well enough — caller should fall back
+    to sending the full schema for that chunk rather than dropping it.
+    """
+    if not schema:
+        return None
+    slug = slugify(heading)
+    if slug in schema:
+        return slug
+    match = difflib.get_close_matches(slug, list(schema.keys()), n=1, cutoff=0.55)
+    return match[0] if match else None
+
+
+def get_chunks(sections: list[dict], max_chars: int = MAX_CHARS, overlap: int = 200) -> list[str]:
+    """
+    Public — used by the /extract router to get chunks for embedding, and
+    internally for extraction. Chunks WITHIN each section (never crosses a
+    heading boundary) and tags every chunk with its heading, e.g.:
+
+        "[SECTION: Anti-ragging Policy]\\nSt. Paul's College has adopted..."
+
+    The tag is parsed back out by extract_chunk_with_schema() so retrieval
+    (pgvector top-k in /reextract or chat) can still route a chunk to the
+    right schema slice even though it only has the stored chunk_text, not
+    the original section list.
+    """
+    all_chunks: list[str] = []
+    for section in sections:
+        heading = section.get("heading", "Document")
+        text = section.get("text", "")
+        if not text.strip():
+            continue
+        for piece in _chunk_text(text, max_chars=max_chars, overlap=overlap):
+            all_chunks.append(f"[SECTION: {heading}]\n{piece}")
+    return all_chunks
+
+
+def _split_section_tag(chunk: str) -> tuple[str | None, str]:
+    """Returns (heading_or_None, body_text_without_tag)."""
+    m = _SECTION_TAG.match(chunk)
+    if not m:
+        return None, chunk
+    return m.group(1), chunk[m.end():]
 
 
 def extract_json(content: str, is_tabular: bool = False) -> dict:
-    """Standard extraction — LLM freely invents schema."""
+    """Standard extraction — LLM freely invents schema. Kept for tabular
+    files and any caller without a pre-built heading-aware schema."""
     if is_tabular:
         prompt = f"""
 You are a highly accurate data extraction system.
@@ -137,40 +208,51 @@ Document:
     return _call_llm(prompt)
 
 
-def generate_document_schema(full_text: str, chunks: list[str] | None = None) -> dict:
+def generate_document_schema(sections: list[dict]) -> dict:
     """
-    Generates a single, unified, structured JSON schema from the FULL document,
-    ensuring later sections and pages are captured.
+    Generates ONE schema object with exactly one top-level key per
+    document heading, instead of sampling arbitrary text windows. This is
+    what prevents the same real-world section (e.g. "Discipline &
+    Grievance Redressal Policy") from ending up as two different schema
+    paths — the heading list is the single source of truth for keys.
     """
-    if len(full_text) > 30000 and chunks and len(chunks) > 1:
-        sampled_sections = []
-        for idx, chunk in enumerate(chunks):
-            sampled_sections.append(f"--- Section {idx + 1} of {len(chunks)} ---\n{chunk[:1200]}")
-        content = "\n\n".join(sampled_sections)
-    else:
-        content = full_text[:35000]
+    if not sections:
+        return {"document": {"type": "object"}}
+
+    outline = "\n".join(f"- {s['heading']}" for s in sections)
+    # Cap preview length per section so a handful of long sections don't
+    # crowd out the schema's visibility into shorter ones.
+    previews = "\n\n".join(
+        f"### {s['heading']}\n{s['text'][:1000]}" for s in sections
+    )
 
     prompt = f"""
 You are an expert data architect and extraction system.
-Analyze the document content below, which covers the full document from beginning to end.
 
-Dynamically invent a single, comprehensive, highly structured JSON schema representing the logical structure of the entire document.
+This document has the following sections, in order:
+{outline}
+
+Content preview for each section:
+{previews}
+
+Task:
+Create ONE JSON schema object with exactly one top-level key per section
+listed above. Slugify each heading into snake_case for its key
+(e.g. "Anti-ragging Policy" -> "anti_ragging_policy"). Do not invent
+sections that are not in the list above, do not merge two headings into
+one key, and do not split one heading's content across two keys.
 
 Rules:
-- Capture all primary entities, sections, metadata, itemized details, and terms from across the document.
 - Define proper field names with appropriate types (string, number, integer, boolean, array, object).
-- For repeating or itemized data (e.g. line items, coverages, transactions, parties), use an array of objects.
+- For repeating or itemized data (e.g. line items, coverages, committee members, transactions), use an array of objects.
 - Do NOT generate fictitious or placeholder data. Generate ONLY the schema.
 
 Return ONLY a valid JSON object in this format:
 {{
   "input_structure": {{
-       ... dynamically created schema ...
+       ... one key per heading above ...
   }}
 }}
-
-Document:
-{content}
 """
     res = _call_llm(prompt)
     if isinstance(res, dict):
@@ -185,13 +267,29 @@ Document:
 
 def extract_chunk_with_schema(chunk: str, schema: dict, chunk_index: int = 0, total_chunks: int = 1) -> dict:
     """
-    Extract fields present in a document chunk strictly adhering to the schema.
-    Returns a dictionary of extracted fields for this chunk.
+    Extract fields present in a document chunk. Routes the chunk to only
+    the schema key(s) matching its heading (via the "[SECTION: ...]" tag
+    get_chunks() stamped on it) instead of sending the full schema —
+    this is what stops a stray phrase from one policy being filed under
+    an unrelated field just because the LLM could see every field name
+    at once.
+
+    Falls back to the full schema if the chunk has no tag (e.g. it came
+    from extract_json's untagged flow) or the heading doesn't match
+    anything in the schema closely enough.
     """
-    schema_str = json.dumps(schema, indent=2)
+    heading, body = _split_section_tag(chunk)
+    routed_key = route_to_schema_key(heading, schema) if heading else None
+    scoped_schema = {routed_key: schema[routed_key]} if routed_key else schema
+
+    schema_str = json.dumps(scoped_schema, indent=2)
+    heading_line = f'This chunk is from the section "{heading}".\n' if heading else ""
+
     prompt = f"""
 You are a precise data extraction system.
-Extract all data from this document chunk strictly adhering to the schema provided.
+{heading_line}Extract all data from this document chunk strictly adhering to the schema provided.
+Only fill fields that belong to this chunk's own section — do not use data
+from this chunk to fill fields that clearly belong to a different section.
 
 Schema:
 {schema_str}
@@ -205,7 +303,7 @@ CRITICAL INSTRUCTIONS:
 - Do NOT use placeholder text like "N/A", "Unknown", or invented example names.
 
 Document chunk ({chunk_index + 1} of {total_chunks}):
-{chunk}
+{body}
 """
     res = _call_llm(prompt)
     if isinstance(res, dict):
@@ -220,7 +318,11 @@ Document chunk ({chunk_index + 1} of {total_chunks}):
 
 
 def extract_with_custom_schema(relevant_chunks: list[str], schema: dict) -> list:
-    """Re-extraction using pre-selected relevant chunks from pgvector."""
+    """Re-extraction using pre-selected relevant chunks from pgvector.
+    Kept for backward compatibility; /reextract now uses per-section
+    retrieval + extract_chunk_with_schema()/merge_chunk_results() instead,
+    since a single flat list here can't route chunks to the right schema
+    slice the way extract_chunk_with_schema() does."""
     schema_str = json.dumps(schema, indent=2)
     all_results = []
 

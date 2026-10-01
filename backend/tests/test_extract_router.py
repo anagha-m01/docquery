@@ -38,17 +38,16 @@ def test_extract_rejects_oversized_file(client, monkeypatch):
 
 
 def test_extract_pdf_success(client, monkeypatch):
-    fake_result = {"schema": {"name": "string"}, "data": [{"name": "Alice"}]}
+    fake_result = {
+        "schema": {"name": "string"},
+        "data": [{"name": "Alice"}],
+        "raw_text": "Alice, 30",
+        "chunks": ["Alice, 30"],
+    }
 
     monkeypatch.setattr(
         "app.routers.extract.process_file",
         lambda path, filename: fake_result,
-    )
-    monkeypatch.setattr(
-        "app.routers.extract.extract_text_from_pdf", lambda path: "Alice, 30"
-    )
-    monkeypatch.setattr(
-        "app.routers.extract.get_chunks", lambda text: ["Alice, 30"]
     )
     monkeypatch.setattr(
         "app.routers.extract.embed_batch", lambda texts: [[0.1] * 384]

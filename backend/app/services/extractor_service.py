@@ -1,12 +1,73 @@
+import difflib
 import re
+import time
 from typing import Any
 
-from app.utils.pdf_parser import extract_text_from_pdf
+from app.utils.pdf_parser import (
+    extract_text_from_pdf,
+    extract_sections_from_pdf,
+    extract_toc_headings,
+)
 from app.utils.excel_parser import extract_json_from_excel
 from app.services.llm_service import (
     generate_document_schema,
     extract_chunk_with_schema,
+    get_chunks,
+    slugify,
 )
+
+
+def group_sections_by_toc(fine_sections: list[dict], toc_headings: list[str]) -> list[dict]:
+    """
+    Font-size heading detection is finer-grained than a document's real
+    TOC (it'll happily split "Code of Conduct" into "Introduction",
+    "Vision and Mission", "Our Core Values", ... as separate headings).
+    Left alone, that turns into 30+ schema keys instead of the ~19 real
+    policy sections, and — worse — a policy whose TOC entry maps to
+    several font-detected sub-headings can end up scattered across
+    several schema paths.
+
+    If the document has a literal TOC/index (extract_toc_headings), fold
+    every fine-grained section into the nearest TOC heading that precedes
+    it, so section boundaries — and therefore schema keys — match the
+    document's own table of contents instead of font-size noise.
+
+    Falls back to returning fine_sections unchanged if there's no TOC.
+    """
+    if not toc_headings:
+        return fine_sections
+
+    toc_slugs = [slugify(h) for h in toc_headings]
+    grouped: list[dict] = []
+    current: dict | None = None
+    toc_ptr = -1  # index into toc_slugs of the TOC heading we're currently inside
+
+    for fs in fine_sections:
+        fs_slug = slugify(fs["heading"])
+
+        # Does this fine-grained heading match the NEXT unreached TOC
+        # entry closely enough to be its start? Only look forward so a
+        # heading that repeats later (e.g. "Objectives") can't snap us
+        # back to an earlier TOC section.
+        matched_new_section = False
+        for look_ahead in range(toc_ptr + 1, len(toc_slugs)):
+            ratio = difflib.SequenceMatcher(None, fs_slug, toc_slugs[look_ahead]).ratio()
+            if fs_slug == toc_slugs[look_ahead] or ratio > 0.82:
+                toc_ptr = look_ahead
+                current = {"heading": toc_headings[toc_ptr], "text": (fs.get("text") or "") + "\n"}
+                grouped.append(current)
+                matched_new_section = True
+                break
+
+        if not matched_new_section:
+            if current is None:
+                current = {"heading": "Front Matter", "text": ""}
+                grouped.append(current)
+            # Sub-heading text folds into the body of its parent TOC
+            # section instead of becoming its own schema key.
+            current["text"] += fs["heading"] + "\n" + fs["text"] + "\n"
+
+    return [g for g in grouped if g["text"].strip()]
 
 
 def chunk_text(text: str, max_chars: int = 5000, overlap: int = 300) -> list[str]:
@@ -259,10 +320,18 @@ def merge_two_objects(
     return merged
 
 
-def validate_grounding(data: Any, source_text: str) -> Any:
+def validate_grounding(data: Any, source_text: str, _is_long_field: bool = False) -> Any:
     """
-    Ensures extracted values are present in the source text and not hallucinated.
-    Replaces ungrounded / hallucinated values with None.
+    Ensures extracted values are present in the source text and not
+    hallucinated. Replaces ungrounded / hallucinated values with None.
+
+    Short factual fields (names, numbers, dates) still need a strong
+    token-overlap match — that's where a hallucination actually matters.
+    Long free-text fields (a vision/mission statement, a paraphrased
+    description) are allowed a lower overlap threshold, since faithful
+    paraphrasing naturally drops some exact words; the 15+ word length
+    itself is evidence it's quoting/paraphrasing a real passage rather
+    than being invented outright.
     """
     if not source_text or not isinstance(source_text, str):
         return data
@@ -270,10 +339,7 @@ def validate_grounding(data: Any, source_text: str) -> Any:
     source_lower = source_text.lower()
 
     if isinstance(data, dict):
-        cleaned = {}
-        for k, v in data.items():
-            cleaned[k] = validate_grounding(v, source_text)
-        return cleaned
+        return {k: validate_grounding(v, source_text) for k, v in data.items()}
 
     if isinstance(data, list):
         cleaned_list = []
@@ -311,13 +377,21 @@ def validate_grounding(data: Any, source_text: str) -> Any:
         if s.lower() in source_lower:
             return data
 
-        # Token overlap for multi-word phrases
         tokens = [t.lower() for t in re.findall(r"\b\w+\b", s) if len(t) > 2]
         if not tokens:
             return data if s.lower() in source_lower else None
 
         found_tokens = [t for t in tokens if t in source_lower]
-        if len(found_tokens) / len(tokens) >= 0.5:
+        overlap_ratio = len(found_tokens) / len(tokens)
+
+        # Long text (>= 15 words) gets a lower bar: paraphrasing a real
+        # sentence naturally loses word-for-word overlap, and inventing a
+        # whole convincing 15+ word sentence from nothing is a much
+        # rarer failure mode than a short hallucinated fact. Short
+        # fields (a name, a figure, a short phrase) keep the strict 0.5
+        # bar since exact grounding matters most there.
+        threshold = 0.35 if len(tokens) >= 15 else 0.5
+        if overlap_ratio >= threshold:
             return data
         return None
 
@@ -449,20 +523,34 @@ def process_file(file_path: str, filename: str):
         return extract_json_from_excel(file_path)
 
     elif filename_lower.endswith(".pdf"):
-        text = extract_text_from_pdf(file_path)
+        timings: dict[str, float] = {}
+        t0 = time.perf_counter()
 
-        if not text.strip():
+        raw_text = extract_text_from_pdf(file_path)
+        if not raw_text.strip():
             return {
                 "schema": {"warning": "No text could be extracted from PDF"},
-                "data": {}
+                "data": {},
             }
 
-        chunks = chunk_text(text, max_chars=5000, overlap=300)
+        fine_sections = extract_sections_from_pdf(file_path)
+        toc_headings = extract_toc_headings(file_path)
+        sections = group_sections_by_toc(fine_sections, toc_headings)
+        timings["sectioning_s"] = round(time.perf_counter() - t0, 2)
 
-        # 1. Generate schema from the FULL document (including later sections/pages)
-        schema = generate_document_schema(full_text=text, chunks=chunks)
+        # 1. Generate ONE schema key per section (heading-driven, not a
+        #    blind character-window sample) — this is what stops the same
+        #    real-world policy from landing under two different schema
+        #    paths.
+        t1 = time.perf_counter()
+        schema = generate_document_schema(sections)
+        timings["schema_generation_s"] = round(time.perf_counter() - t1, 2)
 
-        # 2. Extract across all chunks (including later sections of long PDFs)
+        # 2. Chunk within section boundaries and tag each chunk with its
+        #    heading, then extract each chunk against ONLY the schema
+        #    key(s) that heading routes to.
+        t2 = time.perf_counter()
+        chunks = get_chunks(sections, max_chars=3000, overlap=200)
         chunk_extractions = []
         for i, chunk in enumerate(chunks):
             try:
@@ -471,14 +559,22 @@ def process_file(file_path: str, filename: str):
                     chunk_extractions.append(res)
             except Exception as e:
                 print(f"Error extracting chunk {i}: {e}")
+        timings["extraction_s"] = round(time.perf_counter() - t2, 2)
 
         # 3. Merge chunk results into ONE final JSON object
-        final_data = merge_chunk_results(chunk_extractions, source_text=text, schema=schema)
+        t3 = time.perf_counter()
+        final_data = merge_chunk_results(chunk_extractions, source_text=raw_text, schema=schema)
+        timings["merge_s"] = round(time.perf_counter() - t3, 2)
+        timings["total_s"] = round(time.perf_counter() - t0, 2)
+        print(f"[process_file] {filename} timings: {timings}")
 
         return {
             "schema": schema if schema else {"warning": "No structured schema detected"},
-            "data": final_data  # One final JSON object!
+            "data": final_data,       # One final JSON object!
+            "raw_text": raw_text,     # so routers/extract.py doesn't re-parse the PDF
+            "chunks": chunks,         # section-tagged chunks, reused for embedding storage
         }
 
     else:
         raise ValueError(f"Unsupported file type: {filename}")
+    
