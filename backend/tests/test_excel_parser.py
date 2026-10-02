@@ -7,6 +7,8 @@ plain CSV path exercises both branches.
 
 import csv
 
+import pytest
+
 from app.utils.excel_parser import extract_json_from_excel
 
 
@@ -43,3 +45,35 @@ def test_extract_json_from_excel_fills_missing_values(tmp_path):
     # NaN/empty cells are filled with "" rather than left as null
     assert result["data"][0]["notes"] == ""
     assert result["data"][1]["notes"] == "vip"
+
+
+def test_extract_json_from_excel_rejects_empty_file(tmp_path):
+    csv_path = tmp_path / "empty.csv"
+    csv_path.write_bytes(b"")
+
+    with pytest.raises(ValueError, match="empty"):
+        extract_json_from_excel(str(csv_path))
+
+
+def test_extract_json_from_excel_rejects_corrupt_file(tmp_path):
+    bad_path = tmp_path / "not_really_a_spreadsheet.xlsx"
+    # Invalid UTF-8 bytes so BOTH pd.read_excel (not a real xlsx zip) and
+    # the pd.read_csv fallback (can't decode the bytes as text) fail.
+    bad_path.write_bytes(bytes([0xFF, 0xFE, 0x00, 0x01, 0x80, 0x81, 0x82, 0x83]) * 20)
+
+    with pytest.raises(ValueError):
+        extract_json_from_excel(str(bad_path))
+
+
+def test_extract_json_from_excel_handles_headers_only(tmp_path):
+    csv_path = tmp_path / "headers_only.csv"
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["name", "age"])
+
+    result = extract_json_from_excel(str(csv_path))
+
+    assert result["columns"] == ["name", "age"]
+    assert result["data"] == []
+    assert result["rows"] == []
+    

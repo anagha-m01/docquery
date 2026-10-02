@@ -9,17 +9,24 @@ This file's only job is to wire them together.
 
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 
-from app.core.database import init_db
-from app.routers import extract, reextract, extractions, chat
+from app.core.database import init_db, DatabaseError
+from app.routers import extract, reextract, extractions, chat, auth
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    try:
+        init_db()
+    except DatabaseError as e:
+        # Don't crash the whole process on startup if the DB is briefly
+        # unavailable (e.g. container ordering) — individual requests will
+        # still surface a clear 503 via the handler below.
+        print(f"WARNING: database not ready at startup: {e}")
     yield
 
 
@@ -47,6 +54,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.exception_handler(DatabaseError)
+async def database_error_handler(request: Request, exc: DatabaseError):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+app.include_router(auth.router)
 app.include_router(extract.router)
 app.include_router(reextract.router)
 app.include_router(extractions.router)

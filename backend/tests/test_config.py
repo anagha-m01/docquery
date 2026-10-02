@@ -14,7 +14,7 @@ def test_default_settings_have_sane_fallbacks():
     assert settings.POSTGRES_HOST == "db"
     assert settings.POSTGRES_PORT == 5432
     assert settings.POSTGRES_DB == "docquery_db"
-    assert settings.LLM_MODEL == "groq/compound-mini"
+    assert settings.LLM_MODEL == "openai/gpt-oss-120b"
     assert settings.EMBEDDING_MODEL == "all-MiniLM-L6-v2"
     assert settings.EMBEDDING_DIM == 384
 

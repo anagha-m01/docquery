@@ -8,3 +8,6 @@ groq
 psycopg2-binary
 sentence-transformers==3.0.1
 numpy
+pyjwt
+bcrypt
+email-validator

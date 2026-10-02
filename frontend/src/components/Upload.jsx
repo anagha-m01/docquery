@@ -1,7 +1,5 @@
 import React, { useState } from "react";
-import axios from "axios";
-
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+import api, { extractErrorMessage } from "../api/client";
 
 function Upload({ setResult, setSchema, setError, setExtractionId, setLastFilename, onUploaded }) {
   const [file, setFile] = useState(null);
@@ -36,7 +34,7 @@ function Upload({ setResult, setSchema, setError, setExtractionId, setLastFilena
       setSchema(null);
       setResult(null);
 
-      const res = await axios.post(`${API_URL}/extract`, formData, {
+      const res = await api.post("/extract", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
@@ -52,11 +50,7 @@ function Upload({ setResult, setSchema, setError, setExtractionId, setLastFilena
       if (onUploaded) onUploaded();
 
     } catch (err) {
-      const msg =
-        err.response?.data?.detail ||
-        err.message ||
-        "Extraction failed. Please try again.";
-      setError(msg);
+      setError(extractErrorMessage(err, "Extraction failed. Please try again."));
     } finally {
       setLoading(false);
     }
@@ -112,4 +106,3 @@ function Upload({ setResult, setSchema, setError, setExtractionId, setLastFilena
 }
 
 export default Upload;
-
