@@ -54,40 +54,21 @@ def group_sections_by_toc(fine_sections: list[dict], toc_headings: list[str]) ->
             ratio = difflib.SequenceMatcher(None, fs_slug, toc_slugs[look_ahead]).ratio()
             if fs_slug == toc_slugs[look_ahead] or ratio > 0.82:
                 toc_ptr = look_ahead
-                current = {"heading": toc_headings[toc_ptr], "text": (fs.get("text") or "") + "\n"}
+                current = {"heading": toc_headings[toc_ptr], "text": (fs.get("text") or "") + "\n", "tables": list(fs.get("tables", []))}
                 grouped.append(current)
                 matched_new_section = True
                 break
 
         if not matched_new_section:
             if current is None:
-                current = {"heading": "Front Matter", "text": ""}
+                current = {"heading": "Front Matter", "text": "", "tables": []}
                 grouped.append(current)
             # Sub-heading text folds into the body of its parent TOC
             # section instead of becoming its own schema key.
             current["text"] += fs["heading"] + "\n" + fs["text"] + "\n"
+            current["tables"].extend(fs.get("tables", []))
 
-    return [g for g in grouped if g["text"].strip()]
-
-
-def chunk_text(text: str, max_chars: int = 5000, overlap: int = 300) -> list[str]:
-    """Keep chunks small enough for the LLM's context window.
-
-    A fixed overlap between consecutive chunks means a sentence or table
-    row that straddles a chunk boundary still appears in full in at least
-    one chunk, instead of being silently split in half.
-    """
-    if max_chars <= overlap:
-        overlap = 0
-    chunks = []
-    step = max_chars - overlap
-    for i in range(0, len(text), step):
-        chunk = text[i:i + max_chars]
-        if chunk:
-            chunks.append(chunk)
-        if i + max_chars >= len(text):
-            break
-    return chunks
+    return [g for g in grouped if g["text"].strip() or g["tables"]]
 
 
 def is_empty(val: Any) -> bool:
@@ -568,11 +549,25 @@ def process_file(file_path: str, filename: str):
         timings["total_s"] = round(time.perf_counter() - t0, 2)
         print(f"[process_file] {filename} timings: {timings}")
 
+        # Surface source-PDF text corruption (see pdf_parser module
+        # docstring) instead of letting it sit silently inside a table
+        # cell the LLM extracted faithfully but which is unreliable.
+        warnings = []
+        for s in sections:
+            for t in s.get("tables", []):
+                for row in t.get("rows", []):
+                    if "_extraction_warning" in row:
+                        warnings.append(
+                            f"Section \"{s['heading']}\": possible source-PDF text corruption "
+                            f"in a table row — verify against the original document."
+                        )
+
         return {
             "schema": schema if schema else {"warning": "No structured schema detected"},
             "data": final_data,       # One final JSON object!
             "raw_text": raw_text,     # so routers/extract.py doesn't re-parse the PDF
             "chunks": chunks,         # section-tagged chunks, reused for embedding storage
+            "warnings": warnings,     # e.g. corrupted source-PDF table text, flagged not silently trusted
         }
 
     else:

@@ -1,0 +1,27 @@
+{
+  "name": "policy_document_st_pauls",
+  "pdf_file": "Policy-Document.pdf",
+  "known_headings": [
+    "Code of Conduct",
+    "Divyangjan Policy",
+    "Anti-ragging Policy",
+    "Internal Examination Policy",
+    "Mentoring Policy",
+    "University Examination Policy",
+    "Placement Cell Policy",
+    "Research Policy",
+    "Policy for Canteen Services"
+  ],
+  "known_facts": [
+    "A code of conduct describes the values, vision, mission, and principles of the",
+    "Life Nobly Lived",
+    "Preserve and maintain an herbal garden",
+    "Irregular attendance, insubordination to teachers, all forms of fraud"
+  ],
+  "gold_facts": {
+    "placement_cell_policy.eligibility_criteria": "academic, medical",
+    "vincent_de_paul_society.established_year": "2012",
+    "canteen_policy.trading_times.0.meal": "Morning Snack",
+    "examination_policy.assessment_records_retention.duration_years": "1"
+  }
+}

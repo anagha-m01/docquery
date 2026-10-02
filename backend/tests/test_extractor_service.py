@@ -3,7 +3,6 @@ from unittest.mock import MagicMock, patch
 
 from app.services.extractor_service import (
     process_file,
-    chunk_text,
     group_sections_by_toc,
     is_empty,
     is_metadata_noise,
@@ -14,6 +13,7 @@ from app.services.extractor_service import (
     validate_grounding,
     enforce_schema_types,
 )
+from app.services.llm_service import get_chunks
 
 
 # ── 1. Single Final Output Object ─────────────────────────────
@@ -133,12 +133,12 @@ def test_long_pdf_all_sections_included(monkeypatch, tmp_path):
     assert result["data"]["key_7"] == "Value_7"
 
 
-def test_chunk_text_utility():
-    """Verify chunk_text chunks with overlap."""
-    text = "A" * 1000
-    chunks = chunk_text(text, max_chars=300, overlap=50)
+def test_get_chunks_utility():
+    """Verify get_chunks tags sections and chunks text."""
+    sections = [{"heading": "Section 1", "text": "A" * 1000}]
+    chunks = get_chunks(sections, max_chars=300, overlap=50)
     assert len(chunks) > 1
-    assert all(len(c) <= 300 for c in chunks)
+    assert chunks[0].startswith("[SECTION: Section 1]\n")
 
 
 def test_group_sections_by_toc():

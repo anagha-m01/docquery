@@ -80,7 +80,7 @@ async def extract(file: UploadFile = File(...), current_user: dict = Depends(get
                 embeddings = embed_batch(row_texts)
                 save_excel_rows(row_id, rows, embeddings)
 
-        return {"id": row_id, "data": result}
+        return {"id": row_id, "data": result, "warnings": result.get("warnings", [])}
 
     except HTTPException:
         raise
